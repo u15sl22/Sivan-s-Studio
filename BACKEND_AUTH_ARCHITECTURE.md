@@ -73,7 +73,7 @@ Node.js 服务（默认 127.0.0.1:8766）
 4. SQLite 事务一次性替换该文章的页面记录。
 5. 成功后改为 `ready`，失败后改为 `failed` 并记录错误摘要。
 
-Python 子进程的单任务上限由 `SIVAN_PDF_TIMEOUT_SECONDS` 控制，默认 900 秒，但它不占用上传 HTTP 请求。Python 会原子写入最终 manifest；即使子进程随后超时或异常退出，只要 manifest 和全部页面图片通过完整性校验，Node 仍会将结果写入数据库并标记为 ready。Node 服务启动时会重新查询所有 `processing` 文章并加入队列，也会优先恢复磁盘上已完整生成的结果。教师端每 2.5 秒轮询处理状态，并提供失败重试按钮。
+实测单本 PDF 通常约需 3 分钟。worker 采用单并发以控制 CPU 和内存占用，多本按上传顺序逐本处理，因此空队列中一次上传 10 本通常约需 30 分钟。Python 子进程的单任务上限由 `SIVAN_PDF_TIMEOUT_SECONDS` 控制，默认 900 秒，约为正常耗时的 5 倍，但它不占用上传 HTTP 请求。Python 会原子写入最终 manifest；即使子进程随后超时或异常退出，只要 manifest 和全部页面图片通过完整性校验，Node 仍会将结果写入数据库并标记为 ready。Node 服务启动时会重新查询所有 `processing` 文章并加入队列，也会优先恢复磁盘上已完整生成的结果。教师端每 2.5 秒轮询处理状态，并提供失败重试按钮。
 
 这是单进程、单服务器方案。将来若运行多个 Node 实例，应改为带任务锁的持久队列（如 PostgreSQL job table、BullMQ/Redis 或托管任务队列），防止同一 PDF 被重复处理。
 

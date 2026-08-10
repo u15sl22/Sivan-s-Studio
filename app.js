@@ -608,7 +608,7 @@ async function uploadArticle() {
     state.selectedPdfFiles = [];
     state.activeBooklist = lastBooklistNumber;
     renderSelectedPdfFiles();
-    elements.articleAdminHint.textContent = `${uploaded.length} PDF book${uploaded.length === 1 ? "" : "s"} accepted. PDF rendering and OCR continue in the background.`;
+    elements.articleAdminHint.textContent = `${uploaded.length} PDF book${uploaded.length === 1 ? "" : "s"} accepted. Processing usually takes about 3 minutes per PDF. Multiple books are handled one at a time, and you may leave this page. · 已接收，通常每本约 3 分钟；多本会按顺序处理，可以离开本页面。`;
     await loadTeacher();
     setTeacherTab("files");
   } catch (error) {
@@ -632,7 +632,7 @@ function renderArticleAdmin() {
     const status = article.processingStatus || "ready";
     if (status !== "ready") {
       const isFailed = status === "failed";
-      card.innerHTML = `<div class="teacher-card-heading"><div><strong>${escapeHtml(article.title)}</strong><span class="processing-status ${isFailed ? "failed" : ""}">${isFailed ? "Processing failed · 处理失败" : "PDF/OCR processing · 正在后台处理"}</span></div><button class="danger-button" data-delete-article="${article.id}" type="button">Delete</button></div><div class="processing-panel"><p>${isFailed ? "The original PDF is still stored. Retry processing or delete this book. · 原始 PDF 已保留，可重试或删除。" : "This book will become assignable when every page is rendered and recognized. · 完成逐页渲染和文字识别后即可分配。"}</p>${isFailed ? `<button class="secondary-action retry-processing" data-reprocess-article="${article.id}" type="button">Retry PDF/OCR · 重试处理</button>` : ""}</div>`;
+      card.innerHTML = `<div class="teacher-card-heading"><div><strong>${escapeHtml(article.title)}</strong><span class="processing-status ${isFailed ? "failed" : ""}">${isFailed ? "Processing failed · 处理失败" : "PDF/OCR processing · 正在后台处理"}</span></div><button class="danger-button" data-delete-article="${article.id}" type="button">Delete</button></div><div class="processing-panel"><p>${isFailed ? "The original PDF is still stored. Retry processing or delete this book. · 原始 PDF 已保留，可重试或删除。" : "Processing normally takes about 3 minutes per PDF. Multiple books are processed one at a time; this book becomes assignable when all pages are ready. · 每本通常约 3 分钟，多本按顺序逐本处理；全部页面完成后即可分配。"}</p>${isFailed ? `<button class="secondary-action retry-processing" data-reprocess-article="${article.id}" type="button">Retry PDF/OCR · 重试处理</button>` : ""}</div>`;
       elements.articleAdminList.append(card);
       return;
     }
