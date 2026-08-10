@@ -73,7 +73,7 @@ Node.js 服务（默认 127.0.0.1:8766）
 4. SQLite 事务一次性替换该文章的页面记录。
 5. 成功后改为 `ready`，失败后改为 `failed` 并记录错误摘要。
 
-Python 子进程的单任务上限仍是 180 秒，但它不再占用上传 HTTP 请求。Node 服务启动时会重新查询所有 `processing` 文章并加入队列，因此应用重启不会永久遗失待处理任务。教师端每 2.5 秒轮询处理状态，并提供失败重试按钮。
+Python 子进程的单任务上限由 `SIVAN_PDF_TIMEOUT_SECONDS` 控制，默认 900 秒，但它不占用上传 HTTP 请求。Python 会原子写入最终 manifest；即使子进程随后超时或异常退出，只要 manifest 和全部页面图片通过完整性校验，Node 仍会将结果写入数据库并标记为 ready。Node 服务启动时会重新查询所有 `processing` 文章并加入队列，也会优先恢复磁盘上已完整生成的结果。教师端每 2.5 秒轮询处理状态，并提供失败重试按钮。
 
 这是单进程、单服务器方案。将来若运行多个 Node 实例，应改为带任务锁的持久队列（如 PostgreSQL job table、BullMQ/Redis 或托管任务队列），防止同一 PDF 被重复处理。
 
@@ -109,6 +109,7 @@ SIVAN_TOKEN_SECRET=<长期随机密钥>
 SIVAN_TEACHER_USERNAME=<教师用户名，仅首次建库使用>
 SIVAN_TEACHER_PASSWORD=<至少 12 位，仅首次建库使用>
 SIVAN_PYTHON=<可选，Python 绝对路径>
+SIVAN_PDF_TIMEOUT_SECONDS=900
 ```
 
 部署前应确认：

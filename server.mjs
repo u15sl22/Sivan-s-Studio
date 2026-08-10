@@ -25,6 +25,7 @@ const PORT = Number(process.env.SIVAN_PORT || 8766);
 const TOKEN_TTL_SECONDS = 30 * 60;
 const STUDENT_SCORE_FLOOR = 7.5;
 const BUSINESS_TIME_ZONE = "Asia/Shanghai";
+const PDF_TIMEOUT_SECONDS = Math.max(60, Number(process.env.SIVAN_PDF_TIMEOUT_SECONDS) || 900);
 const TOKEN_SECRET = process.env.SIVAN_TOKEN_SECRET || randomBytes(32).toString("hex");
 const TEACHER_USERNAME = String(process.env.SIVAN_TEACHER_USERNAME || "sivan.teacher").trim().toLowerCase();
 const TEACHER_PASSWORD = process.env.SIVAN_TEACHER_PASSWORD || "";
@@ -342,6 +343,27 @@ function enqueuePdfProcessing(articleId) {
   setImmediate(runPdfQueue);
 }
 
+async function readCompletedPdfPages(manifestPath, bookDir) {
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const pages = Array.isArray(manifest.pages) ? manifest.pages : [];
+    if (!pages.length || Number(manifest.pageCount) !== pages.length) return null;
+    const pageIndexes = new Set();
+    for (const page of pages) {
+      const pageIndex = Number(page.index);
+      if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndexes.has(pageIndex)) return null;
+      pageIndexes.add(pageIndex);
+      if (typeof page.image !== "string" || !page.image) return null;
+      const imagePath = path.resolve(bookDir, page.image);
+      if (!imagePath.startsWith(bookDir + path.sep) || !existsSync(imagePath)) return null;
+    }
+    return pages;
+  } catch {
+    return null;
+  }
+}
+
 async function processStoredPdf(articleId) {
   const article = db.prepare("SELECT source_pdf_path AS sourcePdfPath, processing_status AS processingStatus FROM articles WHERE id = ?").get(articleId);
   if (!article || article.processingStatus !== "processing" || !article.sourcePdfPath) return;
@@ -349,18 +371,37 @@ async function processStoredPdf(articleId) {
   const sourcePath = path.resolve(DATA_DIR, article.sourcePdfPath);
   if (!sourcePath.startsWith(bookDir + path.sep) || !existsSync(sourcePath)) throw new Error("Stored PDF is missing.");
   const manifestPath = path.join(bookDir, "manifest.json");
-  await execFileAsync(PYTHON, [path.join(ROOT, "scripts", "process_pdf.py"), sourcePath, bookDir], {
-    timeout: 180000,
-    maxBuffer: 4 * 1024 * 1024,
-    env: {
-      ...process.env,
-      PYTHONPATH: path.join(ROOT, ".python-packages"),
-      PYTHONNOUSERSITE: "1"
+  const temporaryManifestPath = path.join(bookDir, "manifest.json.tmp");
+  let pages = await readCompletedPdfPages(manifestPath, bookDir);
+  let processError = null;
+
+  if (!pages) {
+    await rm(manifestPath, { force: true });
+    await rm(temporaryManifestPath, { force: true });
+    console.log(`PDF processing started for ${articleId}.`);
+    try {
+      await execFileAsync(PYTHON, [path.join(ROOT, "scripts", "process_pdf.py"), sourcePath, bookDir], {
+        timeout: PDF_TIMEOUT_SECONDS * 1000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: {
+          ...process.env,
+          PYTHONPATH: path.join(ROOT, ".python-packages"),
+          PYTHONNOUSERSITE: "1"
+        }
+      });
+    } catch (error) {
+      processError = error;
     }
-  });
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  const pages = manifest.pages || [];
-  if (!pages.length) throw new Error("PDF contains no displayable pages.");
+    pages = await readCompletedPdfPages(manifestPath, bookDir);
+  }
+
+  if (!pages) {
+    if (processError) throw processError;
+    throw new Error("PDF processing did not produce a complete manifest.");
+  }
+  if (processError) {
+    console.warn(`PDF process exited abnormally after producing complete results for ${articleId}; recovered ${pages.length} page(s).`);
+  }
   if (!db.prepare("SELECT 1 FROM articles WHERE id = ?").get(articleId)) {
     await rm(bookDir, { recursive: true, force: true });
     return;
@@ -376,6 +417,7 @@ async function processStoredPdf(articleId) {
     }
     db.prepare("UPDATE articles SET page_count = ?, processing_status = 'ready', processing_error = '' WHERE id = ?").run(pages.length, articleId);
     db.exec("COMMIT");
+    console.log(`PDF processing completed for ${articleId}: ${pages.length} page(s).`);
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
@@ -394,7 +436,7 @@ async function runPdfQueue() {
         await processStoredPdf(articleId);
       } catch (error) {
         const message = error?.code === "ETIMEDOUT" || error?.killed
-          ? "PDF/OCR processing exceeded 180 seconds."
+          ? `PDF/OCR processing exceeded ${PDF_TIMEOUT_SECONDS} seconds without producing complete results.`
           : String(error?.message || "PDF/OCR processing failed.").slice(0, 500);
         db.prepare("UPDATE articles SET processing_status = 'failed', processing_error = ? WHERE id = ?").run(message, articleId);
         if (!db.prepare("SELECT 1 FROM articles WHERE id = ?").get(articleId)) {

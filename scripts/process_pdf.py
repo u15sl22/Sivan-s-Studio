@@ -64,6 +64,9 @@ def main() -> int:
     source = pathlib.Path(sys.argv[1]).resolve()
     output_dir = pathlib.Path(sys.argv[2]).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "manifest.json"
+    temporary_manifest_path = output_dir / "manifest.json.tmp"
+    temporary_manifest_path.unlink(missing_ok=True)
 
     document = pdfium.PdfDocument(str(source))
     pages: list[dict[str, object]] = []
@@ -89,8 +92,9 @@ def main() -> int:
         page.close()
 
     document.close()
-    manifest = {"source": source.name, "pageCount": len(pages), "pages": pages}
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    manifest = {"complete": True, "source": source.name, "pageCount": len(pages), "pages": pages}
+    temporary_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    temporary_manifest_path.replace(manifest_path)
     return 0
 
 

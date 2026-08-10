@@ -72,6 +72,7 @@ NODE_ENV=production
 TZ=Asia/Shanghai
 SIVAN_PORT=8766
 SIVAN_PYTHON=/opt/venv/bin/python
+SIVAN_PDF_TIMEOUT_SECONDS=900
 
 SIVAN_TOKEN_SECRET=<长期固定的随机密钥>
 SIVAN_TEACHER_USERNAME=sivan.teacher
