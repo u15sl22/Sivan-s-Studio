@@ -13,7 +13,8 @@ const state = {
   teacherData: null,
   teacherTab: "overview",
   selectedPdfFiles: [],
-  activeBooklist: 1
+  activeBooklist: 1,
+  teacherPdfPollId: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -104,14 +105,29 @@ async function api(path, options = {}) {
 function showScreen(name) {
   Object.values(screens).forEach((screen) => screen.classList.remove("active"));
   screens[name].classList.add("active");
+  if (name !== "teacher") {
+    window.clearTimeout(state.teacherPdfPollId);
+    state.teacherPdfPollId = null;
+  }
   elements.backButton.classList.toggle("hidden", name === "welcome");
   elements.teacherButton.classList.toggle("hidden", name === "teacher");
 }
 
+function shanghaiDateParts(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return { year: Number(part("year")), month: Number(part("month")), day: Number(part("day")) };
+}
+
 function countDays(readDays, scope) {
-  const now = new Date();
-  const year = String(now.getFullYear());
-  const month = `${year}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const now = shanghaiDateParts();
+  const year = String(now.year);
+  const month = `${year}-${String(now.month).padStart(2, "0")}`;
   return readDays.filter((day) => scope === "month" ? day.startsWith(month) : day.startsWith(year)).length;
 }
 
@@ -143,6 +159,7 @@ async function teacherLogin() {
     });
     await loadTeacher();
     showScreen("teacher");
+    schedulePdfStatusRefresh();
   } catch (error) {
     elements.teacherLoginHint.textContent = error.message;
   } finally {
@@ -174,18 +191,19 @@ function renderHome() {
 }
 
 function renderCalendar(readDays) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  elements.calendarLabel.textContent = now.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const now = shanghaiDateParts();
+  const year = now.year;
+  const month = now.month - 1;
+  const calendarMonth = new Date(Date.UTC(year, month, 1));
+  elements.calendarLabel.textContent = calendarMonth.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
   elements.calendarGrid.innerHTML = "";
-  for (let index = 0; index < new Date(year, month, 1).getDay(); index += 1) {
+  for (let index = 0; index < calendarMonth.getUTCDay(); index += 1) {
     const blank = document.createElement("div");
     blank.className = "day blank";
     elements.calendarGrid.append(blank);
   }
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const todayKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const todayKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(now.day).padStart(2, "0")}`;
   for (let day = 1; day <= daysInMonth; day += 1) {
     const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     const cell = document.createElement("div");
@@ -441,6 +459,21 @@ async function loadTeacher() {
   renderTeacher();
 }
 
+function schedulePdfStatusRefresh() {
+  window.clearTimeout(state.teacherPdfPollId);
+  state.teacherPdfPollId = null;
+  if (!screens.teacher.classList.contains("active")) return;
+  if (!state.teacherData?.articles.some((article) => article.processingStatus === "processing")) return;
+  state.teacherPdfPollId = window.setTimeout(async () => {
+    try {
+      await loadTeacher();
+      setTeacherTab("files");
+    } catch {
+      if (screens.teacher.classList.contains("active")) schedulePdfStatusRefresh();
+    }
+  }, 2500);
+}
+
 function setTeacherTab(tabName) {
   state.teacherTab = tabName;
   document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("active", button.dataset.teacherTab === tabName));
@@ -454,6 +487,7 @@ function renderTeacher() {
   renderStudentClassOptions();
   renderArticleAdmin();
   setTeacherTab(state.teacherTab);
+  schedulePdfStatusRefresh();
 }
 
 function renderStudentClassOptions() {
@@ -561,20 +595,20 @@ async function uploadArticle() {
     let lastBooklistNumber = state.activeBooklist;
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      elements.articleAdminHint.textContent = `Uploading and rendering ${index + 1}/${files.length}: ${file.name}`;
+      elements.articleAdminHint.textContent = `Uploading ${index + 1}/${files.length}: ${file.name}`;
       const customTitle = files.length === 1 ? elements.articleTitleInput.value.trim() : "";
       const result = await api("/api/teacher/pdfs", {
         method: "POST",
         body: JSON.stringify({ filename: file.name, title: customTitle || file.name.replace(/\.pdf$/i, ""), dataUrl: await fileToDataUrl(file) })
       });
-      uploaded.push(`${result.title} (${result.pageCount} pages)`);
+      uploaded.push(result.title);
       lastBooklistNumber = result.booklistNumber;
     }
     elements.articleTitleInput.value = "";
     state.selectedPdfFiles = [];
     state.activeBooklist = lastBooklistNumber;
     renderSelectedPdfFiles();
-    elements.articleAdminHint.textContent = `${uploaded.length} PDF book${uploaded.length === 1 ? "" : "s"} uploaded. Page text was recognized automatically; choose the classes that may read each book.`;
+    elements.articleAdminHint.textContent = `${uploaded.length} PDF book${uploaded.length === 1 ? "" : "s"} accepted. PDF rendering and OCR continue in the background.`;
     await loadTeacher();
     setTeacherTab("files");
   } catch (error) {
@@ -595,6 +629,13 @@ function renderArticleAdmin() {
   state.teacherData.articles.filter((article) => (Number(article.booklistNumber) || 1) === state.activeBooklist).forEach((article) => {
     const card = document.createElement("div");
     card.className = "article-admin-card";
+    const status = article.processingStatus || "ready";
+    if (status !== "ready") {
+      const isFailed = status === "failed";
+      card.innerHTML = `<div class="teacher-card-heading"><div><strong>${escapeHtml(article.title)}</strong><span class="processing-status ${isFailed ? "failed" : ""}">${isFailed ? "Processing failed · 处理失败" : "PDF/OCR processing · 正在后台处理"}</span></div><button class="danger-button" data-delete-article="${article.id}" type="button">Delete</button></div><div class="processing-panel"><p>${isFailed ? "The original PDF is still stored. Retry processing or delete this book. · 原始 PDF 已保留，可重试或删除。" : "This book will become assignable when every page is rendered and recognized. · 完成逐页渲染和文字识别后即可分配。"}</p>${isFailed ? `<button class="secondary-action retry-processing" data-reprocess-article="${article.id}" type="button">Retry PDF/OCR · 重试处理</button>` : ""}</div>`;
+      elements.articleAdminList.append(card);
+      return;
+    }
     const assignedIds = new Set(article.assignedClasses.map((item) => item.id));
     const checks = state.teacherData.classes.map((classItem) => `<label class="check-row"><input type="checkbox" data-article-class="${article.id}" value="${classItem.id}" ${assignedIds.has(classItem.id) ? "checked" : ""}> ${escapeHtml(classItem.name)}</label>`).join("");
     const recognizedPages = article.pages.filter((page) => page.text?.trim()).length;
@@ -677,6 +718,15 @@ elements.articleAdminList.addEventListener("input", (event) => {
   textarea.saveTimer = window.setTimeout(() => api(`/api/teacher/pages/${encodeURIComponent(textarea.dataset.pageId)}`, { method: "PATCH", body: JSON.stringify({ text: textarea.value }) }).catch(() => {}), 350);
 });
 elements.articleAdminList.addEventListener("click", async (event) => {
+  const retryButton = event.target.closest("[data-reprocess-article]");
+  if (retryButton) {
+    retryButton.disabled = true;
+    await api(`/api/teacher/articles/${encodeURIComponent(retryButton.dataset.reprocessArticle)}/reprocess`, { method: "POST" });
+    elements.articleAdminHint.textContent = "PDF/OCR processing restarted. · 已重新加入后台处理队列。";
+    await loadTeacher();
+    setTeacherTab("files");
+    return;
+  }
   const button = event.target.closest("[data-delete-article]");
   if (!button) return;
   await api(`/api/teacher/articles/${encodeURIComponent(button.dataset.deleteArticle)}`, { method: "DELETE" });

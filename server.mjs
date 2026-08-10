@@ -21,9 +21,10 @@ const bundledPython = process.env.USERPROFILE
   : "";
 const PYTHON = process.env.SIVAN_PYTHON || (bundledPython && existsSync(bundledPython) ? bundledPython : "python");
 
-const PORT = Number(process.env.SIVAN_PORT || 8765);
+const PORT = Number(process.env.SIVAN_PORT || 8766);
 const TOKEN_TTL_SECONDS = 30 * 60;
 const STUDENT_SCORE_FLOOR = 7.5;
+const BUSINESS_TIME_ZONE = "Asia/Shanghai";
 const TOKEN_SECRET = process.env.SIVAN_TOKEN_SECRET || randomBytes(32).toString("hex");
 const TEACHER_USERNAME = String(process.env.SIVAN_TEACHER_USERNAME || "sivan.teacher").trim().toLowerCase();
 const TEACHER_PASSWORD = process.env.SIVAN_TEACHER_PASSWORD || "";
@@ -79,6 +80,8 @@ function initDatabase() {
       source_pdf_path TEXT,
       page_count INTEGER NOT NULL DEFAULT 0,
       booklist_number INTEGER NOT NULL DEFAULT 1,
+      processing_status TEXT NOT NULL DEFAULT 'ready',
+      processing_error TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS article_pages (
@@ -132,6 +135,8 @@ function initDatabase() {
   if (!articleColumns.some((column) => column.name === "source_filename")) db.exec("ALTER TABLE articles ADD COLUMN source_filename TEXT");
   if (!articleColumns.some((column) => column.name === "source_pdf_path")) db.exec("ALTER TABLE articles ADD COLUMN source_pdf_path TEXT");
   if (!articleColumns.some((column) => column.name === "page_count")) db.exec("ALTER TABLE articles ADD COLUMN page_count INTEGER NOT NULL DEFAULT 0");
+  if (!articleColumns.some((column) => column.name === "processing_status")) db.exec("ALTER TABLE articles ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'ready'");
+  if (!articleColumns.some((column) => column.name === "processing_error")) db.exec("ALTER TABLE articles ADD COLUMN processing_error TEXT NOT NULL DEFAULT ''");
   if (!articleColumns.some((column) => column.name === "booklist_number")) {
     db.exec("ALTER TABLE articles ADD COLUMN booklist_number INTEGER NOT NULL DEFAULT 1");
     const existingArticles = db.prepare("SELECT id FROM articles ORDER BY created_at, id").all();
@@ -140,6 +145,7 @@ function initDatabase() {
   }
   db.exec("DROP INDEX IF EXISTS idx_articles_booklist_created_at");
   db.exec("CREATE INDEX IF NOT EXISTS idx_articles_booklist_created_desc ON articles(booklist_number, created_at DESC)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_articles_processing_status ON articles(processing_status) WHERE processing_status = 'processing'");
   db.exec("PRAGMA optimize");
   const pageColumns = db.prepare("PRAGMA table_info(article_pages)").all();
   if (!pageColumns.some((column) => column.name === "image_path")) db.exec("ALTER TABLE article_pages ADD COLUMN image_path TEXT");
@@ -232,6 +238,17 @@ function splitSentences(text) {
   return normalized ? (normalized.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [normalized]).map((item) => item.trim()) : [];
 }
 
+function businessDate(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(value);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 function nextBooklistNumber() {
   const available = db.prepare(`
     SELECT booklist_number AS booklistNumber
@@ -304,7 +321,7 @@ function articleForStudent(articleId, studentId) {
     FROM articles a
     JOIN article_assignments aa ON aa.article_id = a.id
     JOIN students s ON s.class_id = aa.class_id
-    WHERE a.id = ? AND s.id = ? AND s.status = 'active'
+    WHERE a.id = ? AND s.id = ? AND s.status = 'active' AND a.processing_status = 'ready'
   `).get(articleId, studentId);
 }
 
@@ -313,27 +330,84 @@ function articlePages(articleId) {
     .map((page) => ({ ...page, imageUrl: page.imagePath ? `/api/article-pages/${page.id}/image` : "" }));
 }
 
-async function processPdfUpload(articleId, pdfBuffer) {
+const pdfQueue = [];
+const queuedPdfIds = new Set();
+let pdfWorkerRunning = false;
+let activePdfArticleId = null;
+
+function enqueuePdfProcessing(articleId) {
+  if (queuedPdfIds.has(articleId)) return;
+  queuedPdfIds.add(articleId);
+  pdfQueue.push(articleId);
+  setImmediate(runPdfQueue);
+}
+
+async function processStoredPdf(articleId) {
+  const article = db.prepare("SELECT source_pdf_path AS sourcePdfPath, processing_status AS processingStatus FROM articles WHERE id = ?").get(articleId);
+  if (!article || article.processingStatus !== "processing" || !article.sourcePdfPath) return;
   const bookDir = path.join(PDF_DIR, articleId);
-  try {
-    await mkdir(bookDir, { recursive: true });
-    const sourcePath = path.join(bookDir, "source.pdf");
-    const manifestPath = path.join(bookDir, "manifest.json");
-    await writeFile(sourcePath, pdfBuffer);
-    await execFileAsync(PYTHON, [path.join(ROOT, "scripts", "process_pdf.py"), sourcePath, bookDir], {
-      timeout: 180000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: {
-        ...process.env,
-        PYTHONPATH: path.join(ROOT, ".python-packages"),
-        PYTHONNOUSERSITE: "1"
-      }
-    });
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-    return { bookDir, sourcePath, pages: manifest.pages || [] };
-  } catch (error) {
+  const sourcePath = path.resolve(DATA_DIR, article.sourcePdfPath);
+  if (!sourcePath.startsWith(bookDir + path.sep) || !existsSync(sourcePath)) throw new Error("Stored PDF is missing.");
+  const manifestPath = path.join(bookDir, "manifest.json");
+  await execFileAsync(PYTHON, [path.join(ROOT, "scripts", "process_pdf.py"), sourcePath, bookDir], {
+    timeout: 180000,
+    maxBuffer: 4 * 1024 * 1024,
+    env: {
+      ...process.env,
+      PYTHONPATH: path.join(ROOT, ".python-packages"),
+      PYTHONNOUSERSITE: "1"
+    }
+  });
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const pages = manifest.pages || [];
+  if (!pages.length) throw new Error("PDF contains no displayable pages.");
+  if (!db.prepare("SELECT 1 FROM articles WHERE id = ?").get(articleId)) {
     await rm(bookDir, { recursive: true, force: true });
+    return;
+  }
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM article_pages WHERE article_id = ?").run(articleId);
+    const insertPage = db.prepare("INSERT INTO article_pages (id, article_id, page_order, image_data_url, image_path, text) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const page of pages) {
+      const relativeImage = path.relative(DATA_DIR, path.join(bookDir, page.image)).replaceAll("\\", "/");
+      insertPage.run(id("page"), articleId, Number(page.index), "", relativeImage, String(page.text || "").trim());
+    }
+    db.prepare("UPDATE articles SET page_count = ?, processing_status = 'ready', processing_error = '' WHERE id = ?").run(pages.length, articleId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
     throw error;
+  }
+}
+
+async function runPdfQueue() {
+  if (pdfWorkerRunning) return;
+  pdfWorkerRunning = true;
+  try {
+    while (pdfQueue.length) {
+      const articleId = pdfQueue.shift();
+      queuedPdfIds.delete(articleId);
+      activePdfArticleId = articleId;
+      try {
+        await processStoredPdf(articleId);
+      } catch (error) {
+        const message = error?.code === "ETIMEDOUT" || error?.killed
+          ? "PDF/OCR processing exceeded 180 seconds."
+          : String(error?.message || "PDF/OCR processing failed.").slice(0, 500);
+        db.prepare("UPDATE articles SET processing_status = 'failed', processing_error = ? WHERE id = ?").run(message, articleId);
+        if (!db.prepare("SELECT 1 FROM articles WHERE id = ?").get(articleId)) {
+          await rm(path.join(PDF_DIR, articleId), { recursive: true, force: true });
+        }
+        console.error(`PDF processing failed for ${articleId}:`, error);
+      } finally {
+        activePdfArticleId = null;
+      }
+    }
+  } finally {
+    pdfWorkerRunning = false;
+    if (pdfQueue.length) setImmediate(runPdfQueue);
   }
 }
 
@@ -375,17 +449,17 @@ async function api(req, res, url) {
     const student = db.prepare(`SELECT s.id, s.display_name AS name, c.name AS className FROM students s JOIN classes c ON c.id = s.class_id WHERE s.id = ?`).get(auth.sub);
     const readDays = db.prepare("SELECT read_date AS readDate FROM attendance_daily WHERE student_id = ? ORDER BY read_date").all(auth.sub).map((row) => row.readDate);
     const latest = db.prepare("SELECT score FROM submissions WHERE student_id = ? ORDER BY submitted_at DESC LIMIT 1").get(auth.sub);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = businessDate();
     const todayResult = db.prepare(`SELECT s.score, s.wrong_words AS wrong, s.total_words AS total, a.title AS articleTitle FROM attendance_daily ad JOIN submissions s ON s.id = ad.submission_id JOIN articles a ON a.id = s.article_id WHERE ad.student_id = ? AND ad.read_date = ?`).get(auth.sub, today);
     const studentTodayResult = todayResult ? { ...todayResult, score: studentDisplayScore(todayResult.score) } : null;
-    const articles = db.prepare(`SELECT a.id, a.title, COUNT(ap.id) AS pageCount FROM articles a JOIN article_assignments aa ON aa.article_id = a.id JOIN students s ON s.class_id = aa.class_id LEFT JOIN article_pages ap ON ap.article_id = a.id WHERE s.id = ? GROUP BY a.id ORDER BY a.created_at DESC`).all(auth.sub);
+    const articles = db.prepare(`SELECT a.id, a.title, COUNT(ap.id) AS pageCount FROM articles a JOIN article_assignments aa ON aa.article_id = a.id JOIN students s ON s.class_id = aa.class_id LEFT JOIN article_pages ap ON ap.article_id = a.id WHERE s.id = ? AND a.processing_status = 'ready' GROUP BY a.id ORDER BY a.created_at DESC`).all(auth.sub);
     return json(res, 200, { student: { ...student, readDays, latestScore: latest ? studentDisplayScore(latest.score) : "--" }, today: { completed: Boolean(studentTodayResult), ...(studentTodayResult || {}) }, articles });
   }
 
   if (req.method === "GET" && url.pathname === "/api/student/today-recordings") {
     const auth = requireRole(req, res, "student");
     if (!auth) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = businessDate();
     const submission = db.prepare(`SELECT s.id, s.score, s.wrong_words AS wrong, s.total_words AS total, a.title AS articleTitle FROM attendance_daily ad JOIN submissions s ON s.id = ad.submission_id JOIN articles a ON a.id = s.article_id WHERE ad.student_id = ? AND ad.read_date = ?`).get(auth.sub, today);
     if (!submission) return json(res, 404, { error: "Today’s reading has not been completed." });
     const attempts = db.prepare("SELECT id, sentence_order AS sentenceOrder, expected_text AS sentence, duration_ms AS durationMs, recording_path AS recordingPath FROM sentence_attempts WHERE submission_id = ? ORDER BY sentence_order").all(submission.id)
@@ -456,7 +530,7 @@ async function api(req, res, url) {
       db.prepare("INSERT INTO sentence_attempts (id, submission_id, sentence_order, expected_text, heard_text, recording_path, duration_ms, wrong_words, total_words) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(attemptId, submissionId, index, expectedSentences[index], String(input.attempts[index]?.heardText || ""), recordingPath, Math.round(Number(input.attempts[index].durationSeconds) * 1000), results[index].wrong, results[index].total);
     }
-    const today = new Date().toISOString().slice(0, 10);
+    const today = businessDate();
     db.prepare("INSERT INTO attendance_daily (student_id, read_date, submission_id) VALUES (?, ?, ?) ON CONFLICT(student_id, read_date) DO UPDATE SET submission_id = excluded.submission_id").run(auth.sub, today, submissionId);
     return json(res, 201, { submissionId, score: studentDisplayScore(score), wrong, total, attempts: results.map((result, index) => ({ sentence: expectedSentences[index], result })) });
   }
@@ -464,7 +538,7 @@ async function api(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/teacher/dashboard") {
     const auth = requireRole(req, res, "teacher");
     if (!auth) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = businessDate();
     const classes = db.prepare("SELECT id, name FROM classes ORDER BY name").all().map((classItem) => {
       const students = db.prepare("SELECT id, display_name AS name FROM students WHERE class_id = ? AND status = 'active' ORDER BY display_name").all(classItem.id).map((student) => {
         const readDays = db.prepare("SELECT read_date AS readDate FROM attendance_daily WHERE student_id = ? ORDER BY read_date").all(student.id).map((row) => row.readDate);
@@ -477,7 +551,7 @@ async function api(req, res, url) {
       });
       return { ...classItem, students };
     });
-    const articles = db.prepare("SELECT id, title, booklist_number AS booklistNumber FROM articles ORDER BY booklist_number, created_at DESC").all().map((article) => ({
+    const articles = db.prepare("SELECT id, title, booklist_number AS booklistNumber, processing_status AS processingStatus, processing_error AS processingError FROM articles ORDER BY booklist_number, created_at DESC").all().map((article) => ({
       ...article,
       assignedClasses: db.prepare("SELECT c.id, c.name FROM article_assignments aa JOIN classes c ON c.id = aa.class_id WHERE aa.article_id = ?").all(article.id),
       pages: articlePages(article.id)
@@ -532,23 +606,40 @@ async function api(req, res, url) {
     const pdfBuffer = Buffer.from(match[1], "base64");
     if (pdfBuffer.length < 5 || pdfBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") return json(res, 400, { error: "文件内容不是有效的 PDF。" });
     const articleId = id("article");
-    const processed = await processPdfUpload(articleId, pdfBuffer);
-    if (!processed.pages.length) return json(res, 422, { error: "PDF 中没有可显示的页面。" });
-    const relativeSource = path.relative(DATA_DIR, processed.sourcePath).replaceAll("\\", "/");
+    const bookDir = path.join(PDF_DIR, articleId);
+    const sourcePath = path.join(bookDir, "source.pdf");
+    await mkdir(bookDir, { recursive: true });
+    await writeFile(sourcePath, pdfBuffer);
+    const relativeSource = path.relative(DATA_DIR, sourcePath).replaceAll("\\", "/");
     const booklistNumber = nextBooklistNumber();
-    db.prepare("INSERT INTO articles (id, title, source_filename, source_pdf_path, page_count, booklist_number) VALUES (?, ?, ?, ?, ?, ?)").run(articleId, title, filename, relativeSource, processed.pages.length, booklistNumber);
-    for (const page of processed.pages) {
-      const relativeImage = path.relative(DATA_DIR, path.join(processed.bookDir, page.image)).replaceAll("\\", "/");
-      db.prepare("INSERT INTO article_pages (id, article_id, page_order, image_data_url, image_path, text) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(id("page"), articleId, Number(page.index), "", relativeImage, String(page.text || "").trim());
+    try {
+      db.prepare("INSERT INTO articles (id, title, source_filename, source_pdf_path, page_count, booklist_number, processing_status, processing_error) VALUES (?, ?, ?, ?, 0, ?, 'processing', '')")
+        .run(articleId, title, filename, relativeSource, booklistNumber);
+    } catch (error) {
+      await rm(bookDir, { recursive: true, force: true });
+      throw error;
     }
-    return json(res, 201, { id: articleId, title, pageCount: processed.pages.length, booklistNumber });
+    enqueuePdfProcessing(articleId);
+    return json(res, 202, { id: articleId, title, status: "processing", booklistNumber });
+  }
+
+  const reprocessArticleMatch = /^\/api\/teacher\/articles\/([^/]+)\/reprocess$/.exec(url.pathname);
+  if (req.method === "POST" && reprocessArticleMatch) {
+    const auth = requireRole(req, res, "teacher");
+    if (!auth) return;
+    const article = db.prepare("SELECT source_pdf_path AS sourcePdfPath FROM articles WHERE id = ?").get(reprocessArticleMatch[1]);
+    if (!article?.sourcePdfPath || !existsSync(path.resolve(DATA_DIR, article.sourcePdfPath))) return json(res, 404, { error: "原始 PDF 文件不存在。" });
+    db.prepare("UPDATE articles SET processing_status = 'processing', processing_error = '', page_count = 0 WHERE id = ?").run(reprocessArticleMatch[1]);
+    enqueuePdfProcessing(reprocessArticleMatch[1]);
+    return json(res, 202, { id: reprocessArticleMatch[1], status: "processing" });
   }
 
   const assignmentMatch = /^\/api\/teacher\/articles\/([^/]+)\/assignments$/.exec(url.pathname);
   if (req.method === "PUT" && assignmentMatch) {
     const auth = requireRole(req, res, "teacher");
     if (!auth) return;
+    const article = db.prepare("SELECT processing_status AS processingStatus FROM articles WHERE id = ?").get(assignmentMatch[1]);
+    if (!article || article.processingStatus !== "ready") return json(res, 409, { error: "PDF/OCR 处理完成后才能分配班级。" });
     const input = await bodyJson(req);
     db.prepare("DELETE FROM article_assignments WHERE article_id = ?").run(assignmentMatch[1]);
     for (const classId of input.classIds || []) db.prepare("INSERT OR IGNORE INTO article_assignments (article_id, class_id) VALUES (?, ?)").run(assignmentMatch[1], classId);
@@ -570,7 +661,9 @@ async function api(req, res, url) {
     if (!auth) return;
     const articleId = deleteArticleMatch[1];
     db.prepare("DELETE FROM articles WHERE id = ?").run(articleId);
-    await rm(path.join(PDF_DIR, articleId), { recursive: true, force: true });
+    if (activePdfArticleId !== articleId) {
+      await rm(path.join(PDF_DIR, articleId), { recursive: true, force: true });
+    }
     return json(res, 200, { ok: true });
   }
 
@@ -609,4 +702,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Sivan's Studio running at http://127.0.0.1:${PORT}`);
   console.log("Teacher account loaded from the database.");
+  const pending = db.prepare("SELECT id FROM articles WHERE processing_status = 'processing' ORDER BY created_at").all();
+  pending.forEach((article) => enqueuePdfProcessing(article.id));
+  if (pending.length) console.log(`Resumed ${pending.length} pending PDF/OCR job(s).`);
 });
