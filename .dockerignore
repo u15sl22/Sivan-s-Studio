@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+data
+.python-packages
+node_modules
+coverage
+dist
+*.log
+__pycache__
+*.pyc
+.DS_Store
