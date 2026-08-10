@@ -4,6 +4,7 @@ services:
   sivan-studio:
     build:
       context: .
+      network: host
     container_name: sivan-studio
     network_mode: host
     restart: unless-stopped
