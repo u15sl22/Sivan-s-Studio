@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sivan’s Studio</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <button class="icon-button hidden" id="backButton" type="button" aria-label="Back">
+          <span aria-hidden="true">‹</span>
+        </button>
+        <h1>Sivan’s Studio</h1>
+        <button class="icon-button" id="teacherButton" type="button" aria-label="Teacher dashboard">
+          <span aria-hidden="true">◎</span>
+        </button>
+      </header>
+
+      <section class="screen active" id="screenWelcome" aria-labelledby="welcomeTitle">
+        <div class="book-visual" aria-hidden="true">
+          <div class="book-cover">
+            <div class="book-sun"></div>
+            <div class="book-hill"></div>
+            <div class="book-line short"></div>
+            <div class="book-line"></div>
+          </div>
+        </div>
+        <p class="eyebrow">Reading check-in · 阅读打卡</p>
+        <h2 id="welcomeTitle">Sivan’s Studio</h2>
+        <div class="login-panel">
+          <label class="field-label" for="loginName">Student name · 学生姓名</label>
+          <input id="loginName" autocomplete="name" placeholder="Marcus" />
+          <label class="field-label" for="loginCode">Student code · 学生 code</label>
+          <input id="loginCode" autocomplete="one-time-code" placeholder="1234" />
+          <p class="login-hint" id="loginHint">Use the name and code given by your teacher. · 请输入老师提供的姓名和 code。</p>
+          <button class="primary-action" id="studentLoginButton" type="button">Enter · 进入学生端</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenHome" aria-labelledby="homeTitle">
+        <div class="profile-panel">
+          <div>
+            <p class="eyebrow">Student · 学生</p>
+            <h2 id="homeTitle">Sivan’s Studio</h2>
+            <p class="student-name" id="studentName"></p>
+          </div>
+          <div class="score-badge">
+            <span id="latestScore">--</span>
+            <small>encouragement score · 鼓励分</small>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-tile">
+            <span id="monthCount">0</span>
+            <small>days this month · 本月天数</small>
+          </div>
+          <div class="stat-tile">
+            <span id="yearCount">0</span>
+            <small>days this year · 今年天数</small>
+          </div>
+        </div>
+
+        <div class="today-status" id="todayStatus">
+          <span id="todayStatusText"></span>
+          <button class="secondary-action today-recording-button" id="todayRecordingButton" type="button" hidden>Replay today’s recordings · 回听今日录音</button>
+          <div class="student-recording-list" id="todayRecordingList" hidden></div>
+        </div>
+
+        <div class="calendar-panel">
+          <div class="panel-heading">
+            <h3 id="calendarLabel">July 2026</h3>
+            <p>Green means read · 绿色为已读</p>
+          </div>
+          <div class="weekday-row" aria-hidden="true">
+            <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+          </div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+        </div>
+
+        <div class="article-panel">
+          <div class="panel-heading">
+            <h3>Today’s reading choices · 今日可选读物</h3>
+            <p id="articleCountLabel">0 available</p>
+          </div>
+          <div class="article-list" id="studentArticleList"></div>
+        </div>
+      </section>
+
+      <section class="screen" id="screenReader" aria-labelledby="readerTitle">
+        <div class="reader-heading">
+          <p class="eyebrow">Voice practice · 发音练习</p>
+          <h2 id="readerTitle">Sivan’s Studio</h2>
+        </div>
+
+        <div class="sentence-panel">
+          <div class="panel-heading">
+            <h3 id="sentenceProgress">Sentence 1 of 3</h3>
+            <p>Record one sentence · 每次读一句</p>
+          </div>
+          <div class="page-image-frame" id="pageImageFrame"></div>
+          <label class="field-label">Read this sentence · 请读这一句</label>
+          <p class="current-sentence" id="currentSentence"></p>
+        </div>
+
+        <div class="recorder-card">
+          <div class="meter-ring" id="meterRing">
+            <span id="timer">00:00</span>
+          </div>
+          <p id="recordingState">Tap record and read aloud.</p>
+          <div class="recorder-actions">
+            <button class="secondary-action" id="recordButton" type="button">Record · 录音</button>
+            <button class="secondary-action" id="playButton" type="button" disabled>Replay · 回听</button>
+            <button class="secondary-action" id="redoButton" type="button" disabled>Redo · 重录</button>
+          </div>
+          <audio id="audioPlayback" hidden></audio>
+        </div>
+
+        <textarea class="hidden-panel" id="recognizedText" rows="1" aria-hidden="true" tabindex="-1"></textarea>
+
+        <div class="sentence-actions">
+          <button class="secondary-action" id="prevSentenceButton" type="button">Previous · 上一句</button>
+          <button class="primary-action" id="confirmButton" type="button" disabled>Save sentence · 保存本句</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenResult" aria-labelledby="resultTitle">
+        <div class="result-panel">
+          <p class="eyebrow">Reading result · 朗读结果</p>
+          <h2 id="resultTitle">Sivan’s Studio</h2>
+          <div class="big-score"><span id="resultScore">0</span><small>/10 鼓励分</small></div>
+          <p class="score-note" id="scoreNote"></p>
+        </div>
+
+        <div class="review-panel">
+          <h3>Reading summary · 朗读结果</h3>
+          <div class="word-review" id="wordReview"></div>
+        </div>
+
+        <div class="review-panel">
+          <h3>Correct voice · 正确示范语音</h3>
+          <div class="voice-list" id="correctVoiceList"></div>
+        </div>
+
+        <div class="review-panel">
+          <h3>My sentence recordings · 我的逐句录音</h3>
+          <div class="student-recording-list" id="studentRecordingList"></div>
+        </div>
+
+        <div class="encouragement" id="encouragement"></div>
+        <button class="primary-action" id="doneButton" type="button">Done · 完成</button>
+      </section>
+
+      <section class="screen" id="screenTeacherLogin" aria-labelledby="teacherLoginTitle">
+        <p class="eyebrow">Teacher access</p>
+        <h2 id="teacherLoginTitle">Sivan’s Studio</h2>
+        <div class="login-panel">
+          <label class="field-label" for="teacherUsername">Teacher username · 教师账号</label>
+          <input id="teacherUsername" autocomplete="username" placeholder="sivan" />
+          <label class="field-label" for="teacherPassword">Password · 密码</label>
+          <input id="teacherPassword" type="password" autocomplete="current-password" />
+          <p class="login-hint" id="teacherLoginHint">Teacher accounts are verified by the server. · 教师账号由服务器验证。</p>
+          <button class="primary-action" id="teacherLoginButton" type="button">Open teacher view</button>
+        </div>
+      </section>
+
+      <section class="screen" id="screenTeacher" aria-labelledby="teacherTitle">
+        <div class="teacher-heading">
+          <p class="eyebrow">Teacher view</p>
+          <h2 id="teacherTitle">Sivan’s Studio</h2>
+          <p>Manage students, upload reading files, assign files by class, and listen to recordings.</p>
+        </div>
+        <div class="teacher-tabs" role="tablist" aria-label="Teacher tools">
+          <button class="tab-button active" data-teacher-tab="overview" type="button">Overview</button>
+          <button class="tab-button" data-teacher-tab="students" type="button">Students</button>
+          <button class="tab-button" data-teacher-tab="files" type="button">Files</button>
+        </div>
+        <section class="teacher-tool-panel" id="teacherStudentsPanel">
+          <h3>Student setup</h3>
+          <div class="teacher-form-grid">
+            <input id="newStudentName" placeholder="Student name" />
+            <input id="newStudentCode" placeholder="Code" />
+            <select id="newStudentClass" aria-label="Class"></select>
+          </div>
+          <button class="primary-action" id="addStudentButton" type="button">Add / update student</button>
+          <p class="login-hint" id="studentAdminHint">Student codes are set here only.</p>
+        </section>
+        <section class="teacher-tool-panel" id="teacherFilesPanel">
+          <h3>PDF reading library</h3>
+          <input id="articleTitleInput" placeholder="Optional title for a single PDF" />
+          <label class="file-picker">
+            <span>Choose one or many PDF books · 选择一个或多个 PDF</span>
+            <input id="articleFileInput" type="file" accept="application/pdf,.pdf" multiple />
+          </label>
+          <div class="selected-pdf-list" id="selectedPdfList" aria-live="polite"></div>
+          <button class="primary-action" id="uploadArticleButton" type="button" disabled>Upload PDF books · 上传 PDF</button>
+          <p class="login-hint" id="articleAdminHint">Each PDF becomes one book. Every page is rendered as an image and its reading text is recognized automatically.</p>
+          <div class="booklist-tabs" id="booklistTabs" aria-label="Booklists"></div>
+          <div class="article-admin-list" id="articleAdminList"></div>
+        </section>
+        <div class="teacher-list" id="teacherList"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

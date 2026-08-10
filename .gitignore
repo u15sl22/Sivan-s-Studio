@@ -1,0 +1,15 @@
+data/
+.env
+.env.*
+!.env.example
+*.log
+__pycache__/
+*.pyc
+.python-packages/
+node_modules/
+dist/
+coverage/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
