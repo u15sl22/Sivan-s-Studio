@@ -14,6 +14,8 @@ const state = {
   teacherTab: "overview",
   selectedPdfFiles: [],
   activeBooklist: 1,
+  collapsedOverviewClasses: new Set(),
+  collapsedBooklists: new Set(),
   teacherPdfPollId: null
 };
 
@@ -73,6 +75,10 @@ const elements = {
   teacherList: $("#teacherList"),
   teacherStudentsPanel: $("#teacherStudentsPanel"),
   teacherFilesPanel: $("#teacherFilesPanel"),
+  classAdminList: $("#classAdminList"),
+  newClassName: $("#newClassName"),
+  addClassButton: $("#addClassButton"),
+  classAdminHint: $("#classAdminHint"),
   newStudentName: $("#newStudentName"),
   newStudentCode: $("#newStudentCode"),
   newStudentClass: $("#newStudentClass"),
@@ -84,7 +90,10 @@ const elements = {
   uploadArticleButton: $("#uploadArticleButton"),
   articleAdminHint: $("#articleAdminHint"),
   booklistTabs: $("#booklistTabs"),
-  articleAdminList: $("#articleAdminList")
+  booklistCollapseButton: $("#booklistCollapseButton"),
+  articleAdminList: $("#articleAdminList"),
+  confirmDialog: $("#confirmDialog"),
+  confirmDialogMessage: $("#confirmDialogMessage")
 };
 
 async function api(path, options = {}) {
@@ -484,6 +493,7 @@ function setTeacherTab(tabName) {
 
 function renderTeacher() {
   renderTeacherOverview();
+  renderClassAdmin();
   renderStudentClassOptions();
   renderArticleAdmin();
   setTeacherTab(state.teacherTab);
@@ -491,7 +501,78 @@ function renderTeacher() {
 }
 
 function renderStudentClassOptions() {
+  const selected = elements.newStudentClass.value;
   elements.newStudentClass.innerHTML = state.teacherData.classes.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
+  if (state.teacherData.classes.some((item) => item.id === selected)) elements.newStudentClass.value = selected;
+  elements.addStudentButton.disabled = state.teacherData.classes.length === 0;
+}
+
+function renderClassAdmin() {
+  elements.classAdminList.innerHTML = state.teacherData.classes.map((classItem) => `
+    <div class="class-admin-row">
+      <input value="${escapeHtml(classItem.name)}" aria-label="Rename ${escapeHtml(classItem.name)}" data-class-name="${classItem.id}" />
+      <button class="secondary-action" data-save-class="${classItem.id}" type="button">Save · 保存</button>
+      <button class="danger-button" data-delete-class="${classItem.id}" data-class-label="${escapeHtml(classItem.name)}" type="button">Delete · 删除</button>
+    </div>
+  `).join("");
+}
+
+async function addClass() {
+  const name = elements.newClassName.value.trim();
+  if (!name) {
+    elements.classAdminHint.textContent = "Please enter a class name. · 请输入班级名称。";
+    return;
+  }
+  try {
+    await api("/api/teacher/classes", { method: "POST", body: JSON.stringify({ name }) });
+    elements.newClassName.value = "";
+    elements.classAdminHint.textContent = `${name} added. · 班级已增加。`;
+    await loadTeacher();
+    setTeacherTab("students");
+  } catch (error) {
+    elements.classAdminHint.textContent = error.message;
+  }
+}
+
+async function renameClass(classId) {
+  const input = elements.classAdminList.querySelector(`[data-class-name="${CSS.escape(classId)}"]`);
+  const name = input?.value.trim() || "";
+  if (!name) {
+    elements.classAdminHint.textContent = "Class name cannot be empty. · 班级名称不能为空。";
+    return;
+  }
+  try {
+    await api(`/api/teacher/classes/${encodeURIComponent(classId)}`, { method: "PATCH", body: JSON.stringify({ name }) });
+    elements.classAdminHint.textContent = `${name} saved. · 班级名称已保存。`;
+    await loadTeacher();
+    setTeacherTab("students");
+  } catch (error) {
+    elements.classAdminHint.textContent = error.message;
+  }
+}
+
+async function deleteClass(classId, className) {
+  const confirmed = await confirmDeletion(`Delete class “${className}”? Assigned books will be unassigned. · 是否删除班级“${className}”？已分配读物将取消分配。`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/teacher/classes/${encodeURIComponent(classId)}`, { method: "DELETE" });
+    state.collapsedOverviewClasses.delete(classId);
+    elements.classAdminHint.textContent = `${className} deleted. · 班级已删除。`;
+    await loadTeacher();
+    setTeacherTab("students");
+  } catch (error) {
+    elements.classAdminHint.textContent = error.message;
+  }
+}
+
+function confirmDeletion(message) {
+  if (!elements.confirmDialog?.showModal) return Promise.resolve(window.confirm(message));
+  elements.confirmDialogMessage.textContent = message;
+  elements.confirmDialog.returnValue = "cancel";
+  elements.confirmDialog.showModal();
+  return new Promise((resolve) => {
+    elements.confirmDialog.addEventListener("close", () => resolve(elements.confirmDialog.returnValue === "confirm"), { once: true });
+  });
 }
 
 function renderTeacherOverview() {
@@ -501,13 +582,16 @@ function renderTeacherOverview() {
     section.className = "class-section";
     const monthly = classItem.students.reduce((sum, student) => sum + countDays(student.readDays, "month"), 0);
     const completedToday = classItem.students.filter((student) => student.today.completed).length;
-    section.innerHTML = `<div class="class-heading"><h3>${escapeHtml(classItem.name)}</h3><span>${state.teacherData.date}: ${completedToday}/${classItem.students.length} completed · ${monthly} monthly check-ins</span></div>`;
+    const collapsed = state.collapsedOverviewClasses.has(classItem.id);
+    section.innerHTML = `<button class="class-heading class-toggle" data-toggle-class="${classItem.id}" type="button" aria-expanded="${!collapsed}"><span class="collapse-icon" aria-hidden="true">${collapsed ? "▸" : "▾"}</span><h3>${escapeHtml(classItem.name)}</h3><span>${state.teacherData.date}: ${completedToday}/${classItem.students.length} completed · ${monthly} monthly check-ins</span></button>`;
+    const classContent = document.createElement("div");
+    classContent.className = `class-content${collapsed ? " hidden-panel" : ""}`;
     classItem.students.forEach((student) => {
       const card = document.createElement("div");
       card.className = "teacher-card";
       const lastRead = student.readDays.at(-1) || "--";
       const todayText = student.today.completed ? `Completed · ${escapeHtml(student.today.articleTitle)} · raw score ${student.today.score}/10` : "Not participated · 今日未参与";
-      card.innerHTML = `<div class="teacher-card-heading"><div><strong>${escapeHtml(student.name)}</strong><span>${escapeHtml(student.className)}</span></div><button class="danger-button" data-delete-student="${student.id}" type="button">Delete</button></div><div class="completion-badge ${student.today.completed ? "complete" : ""}">${todayText}</div><span>Latest raw score · 最近真实得分: ${student.latestScore}</span><div class="teacher-row"><div class="teacher-metric"><b>${countDays(student.readDays, "month")}</b><small>month</small></div><div class="teacher-metric"><b>${countDays(student.readDays, "year")}</b><small>year</small></div><div class="teacher-metric"><b class="date-value">${lastRead}</b><small>last read</small></div></div>`;
+      card.innerHTML = `<div class="teacher-card-heading"><div><strong>${escapeHtml(student.name)}</strong><span>${escapeHtml(student.className)}</span></div><button class="danger-button" data-delete-student="${student.id}" data-student-label="${escapeHtml(student.name)}" type="button">Delete</button></div><div class="completion-badge ${student.today.completed ? "complete" : ""}">${todayText}</div><span>Latest raw score · 最近真实得分: ${student.latestScore}</span><div class="teacher-row"><div class="teacher-metric"><b>${countDays(student.readDays, "month")}</b><small>month</small></div><div class="teacher-metric"><b>${countDays(student.readDays, "year")}</b><small>year</small></div><div class="teacher-metric"><b class="date-value">${lastRead}</b><small>last read</small></div></div>`;
       const audioList = document.createElement("div");
       audioList.className = "teacher-audio-list";
       const recordedAttempts = student.submissions.flatMap((submission) => submission.attempts.filter((attempt) => attempt.audioUrl).map((attempt) => ({ ...attempt, articleTitle: submission.articleTitle, submittedAt: submission.submittedAt })));
@@ -519,8 +603,9 @@ function renderTeacherOverview() {
         audioList.append(row);
       });
       card.append(audioList);
-      section.append(card);
+      classContent.append(card);
     });
+    section.append(classContent);
     elements.teacherList.append(section);
   });
 }
@@ -557,10 +642,19 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function readingFileType(file) {
+  return file.type === "image/png" || file.name.toLowerCase().endsWith(".png") ? "PNG" : "PDF";
+}
+
+function isSupportedReadingFile(file) {
+  return (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))
+    || (file.type === "image/png" || file.name.toLowerCase().endsWith(".png"));
+}
+
 function renderSelectedPdfFiles() {
   const files = state.selectedPdfFiles;
   elements.selectedPdfList.innerHTML = files.length
-    ? `<div class="selected-pdf-summary"><strong>${files.length} PDF${files.length === 1 ? "" : "s"} selected</strong><button type="button" data-clear-pdfs>Clear all</button></div>${files.map((file, index) => `<div class="selected-pdf-item"><span class="pdf-file-icon" aria-hidden="true">PDF</span><span class="selected-pdf-name"><strong>${escapeHtml(file.name)}</strong><small>${formatFileSize(file.size)}</small></span><button type="button" data-remove-pdf="${index}" aria-label="Remove ${escapeHtml(file.name)}">&times;</button></div>`).join("")}`
+    ? `<div class="selected-pdf-summary"><strong>${files.length} file${files.length === 1 ? "" : "s"} selected</strong><button type="button" data-clear-pdfs>Clear all</button></div>${files.map((file, index) => { const type = readingFileType(file); return `<div class="selected-pdf-item"><span class="pdf-file-icon ${type === "PNG" ? "png-file-icon" : ""}" aria-hidden="true">${type}</span><span class="selected-pdf-name"><strong>${escapeHtml(file.name)}</strong><small>${formatFileSize(file.size)}</small></span><button type="button" data-remove-pdf="${index}" aria-label="Remove ${escapeHtml(file.name)}">&times;</button></div>`; }).join("")}`
     : "";
   elements.uploadArticleButton.disabled = files.length === 0;
 }
@@ -581,15 +675,15 @@ function addSelectedPdfFiles(fileList) {
 async function uploadArticle() {
   const files = [...state.selectedPdfFiles];
   if (!files.length) {
-    elements.articleAdminHint.textContent = "Please choose at least one PDF file. · 请至少选择一个 PDF。";
+    elements.articleAdminHint.textContent = "Please choose at least one PDF or PNG file. · 请至少选择一个 PDF 或 PNG。";
     return;
   }
-  if (files.some((file) => file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf"))) {
-    elements.articleAdminHint.textContent = "Only PDF books are supported in this uploader. · 此处只支持 PDF。";
+  if (files.some((file) => !isSupportedReadingFile(file))) {
+    elements.articleAdminHint.textContent = "Only PDF and PNG reading files are supported. · 此处仅支持 PDF 和 PNG。";
     return;
   }
   elements.uploadArticleButton.disabled = true;
-  elements.articleAdminHint.textContent = `Preparing ${files.length} PDF book${files.length === 1 ? "" : "s"}... · 正在准备 ${files.length} 本读物...`;
+  elements.articleAdminHint.textContent = `Preparing ${files.length} reading file${files.length === 1 ? "" : "s"}... · 正在准备 ${files.length} 本读物...`;
   try {
     const uploaded = [];
     let lastBooklistNumber = state.activeBooklist;
@@ -599,7 +693,7 @@ async function uploadArticle() {
       const customTitle = files.length === 1 ? elements.articleTitleInput.value.trim() : "";
       const result = await api("/api/teacher/pdfs", {
         method: "POST",
-        body: JSON.stringify({ filename: file.name, title: customTitle || file.name.replace(/\.pdf$/i, ""), dataUrl: await fileToDataUrl(file) })
+        body: JSON.stringify({ filename: file.name, title: customTitle || file.name.replace(/\.(?:pdf|png)$/i, ""), dataUrl: await fileToDataUrl(file) })
       });
       uploaded.push(result.title);
       lastBooklistNumber = result.booklistNumber;
@@ -608,7 +702,7 @@ async function uploadArticle() {
     state.selectedPdfFiles = [];
     state.activeBooklist = lastBooklistNumber;
     renderSelectedPdfFiles();
-    elements.articleAdminHint.textContent = `${uploaded.length} PDF book${uploaded.length === 1 ? "" : "s"} accepted. Processing usually takes about 3 minutes per PDF. Multiple books are handled one at a time, and you may leave this page. · 已接收，通常每本约 3 分钟；多本会按顺序处理，可以离开本页面。`;
+    elements.articleAdminHint.textContent = `${uploaded.length} reading file${uploaded.length === 1 ? "" : "s"} accepted. Processing continues in the background, and you may leave this page. · 已接收并在后台处理，可以离开本页面。`;
     await loadTeacher();
     setTeacherTab("files");
   } catch (error) {
@@ -621,11 +715,24 @@ async function uploadArticle() {
 function renderArticleAdmin() {
   elements.articleAdminList.innerHTML = "";
   const booklists = [...new Set(state.teacherData.articles.map((article) => Number(article.booklistNumber) || 1))].sort((a, b) => a - b);
+  if (!booklists.length) {
+    elements.booklistTabs.innerHTML = "";
+    elements.booklistCollapseButton.hidden = true;
+    elements.articleAdminList.classList.remove("hidden-panel");
+    elements.articleAdminList.innerHTML = '<p class="empty-audio">No reading files yet. · 暂无读物。</p>';
+    return;
+  }
   if (booklists.length && !booklists.includes(state.activeBooklist)) state.activeBooklist = booklists[0];
   elements.booklistTabs.innerHTML = booklists.map((number) => {
     const count = state.teacherData.articles.filter((article) => (Number(article.booklistNumber) || 1) === number).length;
     return `<button class="booklist-tab ${state.activeBooklist === number ? "active" : ""}" type="button" data-booklist="${number}"><strong>Booklist ${number}</strong><span>${count}/10 books</span></button>`;
   }).join("");
+  const booklistCollapsed = state.collapsedBooklists.has(state.activeBooklist);
+  elements.booklistCollapseButton.hidden = false;
+  elements.booklistCollapseButton.dataset.toggleBooklist = String(state.activeBooklist);
+  elements.booklistCollapseButton.setAttribute("aria-expanded", String(!booklistCollapsed));
+  elements.booklistCollapseButton.textContent = `${booklistCollapsed ? "Expand" : "Collapse"} Booklist ${state.activeBooklist} · ${booklistCollapsed ? "展开" : "收起"}书单`;
+  elements.articleAdminList.classList.toggle("hidden-panel", booklistCollapsed);
   state.teacherData.articles.filter((article) => (Number(article.booklistNumber) || 1) === state.activeBooklist).forEach((article) => {
     const card = document.createElement("div");
     card.className = "article-admin-card";
@@ -688,12 +795,29 @@ elements.teacherButton.addEventListener("click", () => {
   showScreen("teacherLogin");
 });
 document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => setTeacherTab(button.dataset.teacherTab)));
+elements.addClassButton.addEventListener("click", addClass);
+elements.newClassName.addEventListener("keydown", (event) => { if (event.key === "Enter") addClass(); });
+elements.classAdminList.addEventListener("click", (event) => {
+  const saveButton = event.target.closest("[data-save-class]");
+  if (saveButton) {
+    renameClass(saveButton.dataset.saveClass);
+    return;
+  }
+  const deleteButton = event.target.closest("[data-delete-class]");
+  if (deleteButton) deleteClass(deleteButton.dataset.deleteClass, deleteButton.dataset.classLabel);
+});
 elements.addStudentButton.addEventListener("click", addOrUpdateStudent);
 elements.articleFileInput.addEventListener("change", () => addSelectedPdfFiles(elements.articleFileInput.files));
 elements.booklistTabs.addEventListener("click", (event) => {
   const button = event.target.closest("[data-booklist]");
   if (!button) return;
   state.activeBooklist = Number(button.dataset.booklist);
+  renderArticleAdmin();
+});
+elements.booklistCollapseButton.addEventListener("click", () => {
+  const number = Number(elements.booklistCollapseButton.dataset.toggleBooklist);
+  if (state.collapsedBooklists.has(number)) state.collapsedBooklists.delete(number);
+  else state.collapsedBooklists.add(number);
   renderArticleAdmin();
 });
 elements.selectedPdfList.addEventListener("click", (event) => {
@@ -703,9 +827,20 @@ elements.selectedPdfList.addEventListener("click", (event) => {
   renderSelectedPdfFiles();
 });
 elements.uploadArticleButton.addEventListener("click", uploadArticle);
-elements.teacherList.addEventListener("click", (event) => {
+elements.teacherList.addEventListener("click", async (event) => {
+  const toggle = event.target.closest("[data-toggle-class]");
+  if (toggle) {
+    const classId = toggle.dataset.toggleClass;
+    if (state.collapsedOverviewClasses.has(classId)) state.collapsedOverviewClasses.delete(classId);
+    else state.collapsedOverviewClasses.add(classId);
+    renderTeacherOverview();
+    return;
+  }
   const button = event.target.closest("[data-delete-student]");
-  if (button) deleteStudent(button.dataset.deleteStudent).catch(() => {});
+  if (!button) return;
+  const studentName = button.dataset.studentLabel || "this student";
+  const confirmed = await confirmDeletion(`Delete student “${studentName}”? This will disable their login but keep historical results. · 是否删除学生“${studentName}”？登录将停用，但历史成绩会保留。`);
+  if (confirmed) deleteStudent(button.dataset.deleteStudent).catch(() => {});
 });
 elements.articleAdminList.addEventListener("change", (event) => {
   const input = event.target.closest("[data-article-class]");

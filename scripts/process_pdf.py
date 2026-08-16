@@ -1,4 +1,4 @@
-"""Render a children's-book PDF and recognize the reading text on every page."""
+"""Render a children's-book PDF or PNG and recognize its reading text."""
 
 from __future__ import annotations
 
@@ -7,14 +7,13 @@ import pathlib
 import re
 import sys
 
-import pypdfium2 as pdfium
-from PIL import Image, ImageEnhance
-
-
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 LOCAL_PACKAGES = PROJECT_ROOT / ".python-packages"
 if LOCAL_PACKAGES.exists():
     sys.path.insert(0, str(LOCAL_PACKAGES))
+
+import pypdfium2 as pdfium
+from PIL import Image, ImageEnhance
 
 _ocr_engine = None
 
@@ -59,7 +58,7 @@ def recognize_image(image_path: pathlib.Path) -> str:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        raise SystemExit("usage: process_pdf.py INPUT_PDF OUTPUT_DIR")
+        raise SystemExit("usage: process_pdf.py INPUT_FILE OUTPUT_DIR")
 
     source = pathlib.Path(sys.argv[1]).resolve()
     output_dir = pathlib.Path(sys.argv[2]).resolve()
@@ -68,30 +67,38 @@ def main() -> int:
     temporary_manifest_path = output_dir / "manifest.json.tmp"
     temporary_manifest_path.unlink(missing_ok=True)
 
-    document = pdfium.PdfDocument(str(source))
     pages: list[dict[str, object]] = []
 
-    for index in range(len(document)):
-        page = document[index]
-        filename = f"page-{index + 1:04d}.jpg"
+    if source.suffix.lower() == ".png":
+        filename = "page-0001.jpg"
         destination = output_dir / filename
+        with Image.open(source) as source_image:
+            image = source_image.convert("RGB")
+            image.save(destination, format="JPEG", quality=88, optimize=True)
+        text = recognize_image(destination)
+        pages.append({"index": 0, "image": filename, "text": text, "textSource": "ocr" if text else "none"})
+    else:
+        document = pdfium.PdfDocument(str(source))
+        for index in range(len(document)):
+            page = document[index]
+            filename = f"page-{index + 1:04d}.jpg"
+            destination = output_dir / filename
 
-        bitmap = page.render(scale=1.8)
-        image = bitmap.to_pil().convert("RGB")
-        image.save(destination, format="JPEG", quality=88, optimize=True)
+            bitmap = page.render(scale=1.8)
+            image = bitmap.to_pil().convert("RGB")
+            image.save(destination, format="JPEG", quality=88, optimize=True)
 
-        text_page = page.get_textpage()
-        text = normalize_text(text_page.get_text_range())
-        text_source = "embedded"
-        if not text:
-            text = recognize_image(destination)
-            text_source = "ocr" if text else "none"
-        pages.append({"index": index, "image": filename, "text": text, "textSource": text_source})
+            text_page = page.get_textpage()
+            text = normalize_text(text_page.get_text_range())
+            text_source = "embedded"
+            if not text:
+                text = recognize_image(destination)
+                text_source = "ocr" if text else "none"
+            pages.append({"index": index, "image": filename, "text": text, "textSource": text_source})
 
-        text_page.close()
-        page.close()
-
-    document.close()
+            text_page.close()
+            page.close()
+        document.close()
     manifest = {"complete": True, "source": source.name, "pageCount": len(pages), "pages": pages}
     temporary_manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     temporary_manifest_path.replace(manifest_path)

@@ -777,6 +777,11 @@ textarea {
   font-weight: 900;
 }
 
+.png-file-icon {
+  background: #e8f7ef;
+  color: var(--green);
+}
+
 .selected-pdf-name {
   display: grid;
   min-width: 0;
@@ -794,6 +799,36 @@ textarea {
   color: var(--muted);
 }
 
+.class-manager {
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.class-admin-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.class-admin-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.class-admin-row button,
+.class-add-row button {
+  min-height: 40px;
+}
+
+.class-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .class-section {
   padding: 14px;
 }
@@ -804,6 +839,23 @@ textarea {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.class-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.collapse-icon {
+  flex: 0 0 14px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.2;
 }
 
 .class-heading h3 {
@@ -906,6 +958,10 @@ textarea {
   margin-top: 12px;
 }
 
+.article-admin-list.hidden-panel {
+  display: none;
+}
+
 .booklist-tabs {
   display: flex;
   gap: 8px;
@@ -949,6 +1005,11 @@ textarea {
 
 .booklist-tab.active span {
   color: #dce5ee;
+}
+
+.booklist-collapse-button {
+  width: 100%;
+  margin-top: 9px;
 }
 
 .article-admin-card {
@@ -1031,6 +1092,39 @@ textarea {
   color: #fff;
   font-size: 10px;
   font-weight: 800;
+}
+
+.confirm-dialog {
+  width: min(360px, calc(100vw - 32px));
+  border: 0;
+  border-radius: 12px;
+  padding: 0;
+  box-shadow: 0 20px 60px rgba(23, 32, 42, 0.25);
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(23, 32, 42, 0.48);
+}
+
+.confirm-dialog form {
+  padding: 20px;
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 10px;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.confirm-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-top: 18px;
 }
 
 @media (min-width: 431px) {

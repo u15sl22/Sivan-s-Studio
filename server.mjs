@@ -132,6 +132,8 @@ function initDatabase() {
   if (!attemptColumns.some((column) => column.name === "duration_ms")) {
     db.exec("ALTER TABLE sentence_attempts ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0");
   }
+  const classColumns = db.prepare("PRAGMA table_info(classes)").all();
+  if (!classColumns.some((column) => column.name === "status")) db.exec("ALTER TABLE classes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
   const articleColumns = db.prepare("PRAGMA table_info(articles)").all();
   if (!articleColumns.some((column) => column.name === "source_filename")) db.exec("ALTER TABLE articles ADD COLUMN source_filename TEXT");
   if (!articleColumns.some((column) => column.name === "source_pdf_path")) db.exec("ALTER TABLE articles ADD COLUMN source_pdf_path TEXT");
@@ -466,7 +468,7 @@ async function api(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/auth/student/login") {
     const input = await bodyJson(req);
     const normalized = String(input.name || "").trim().toLowerCase();
-    const student = db.prepare(`SELECT s.*, c.name AS class_name FROM students s JOIN classes c ON c.id = s.class_id WHERE s.normalized_name = ? AND s.status = 'active'`).get(normalized);
+    const student = db.prepare(`SELECT s.*, c.name AS class_name FROM students s JOIN classes c ON c.id = s.class_id WHERE s.normalized_name = ? AND s.status = 'active' AND c.status = 'active'`).get(normalized);
     if (!student || !verifySecret(String(input.code || ""), student.code_hash)) return json(res, 401, { error: "姓名或 code 不正确。" });
     setSessionCookie(res, signToken({ sub: student.id, role: "student", ver: student.token_version }));
     return json(res, 200, { user: { id: student.id, name: student.display_name, className: student.class_name }, expiresIn: TOKEN_TTL_SECONDS });
@@ -581,7 +583,7 @@ async function api(req, res, url) {
     const auth = requireRole(req, res, "teacher");
     if (!auth) return;
     const today = businessDate();
-    const classes = db.prepare("SELECT id, name FROM classes ORDER BY name").all().map((classItem) => {
+    const classes = db.prepare("SELECT id, name FROM classes WHERE status = 'active' ORDER BY name").all().map((classItem) => {
       const students = db.prepare("SELECT id, display_name AS name FROM students WHERE class_id = ? AND status = 'active' ORDER BY display_name").all(classItem.id).map((student) => {
         const readDays = db.prepare("SELECT read_date AS readDate FROM attendance_daily WHERE student_id = ? ORDER BY read_date").all(student.id).map((row) => row.readDate);
         const submissions = db.prepare(`SELECT s.id, s.score, s.wrong_words AS wrong, s.total_words AS total, s.submitted_at AS submittedAt, a.title AS articleTitle FROM submissions s JOIN articles a ON a.id = s.article_id WHERE s.student_id = ? ORDER BY s.submitted_at DESC LIMIT 8`).all(student.id).map((submission) => ({
@@ -595,10 +597,61 @@ async function api(req, res, url) {
     });
     const articles = db.prepare("SELECT id, title, booklist_number AS booklistNumber, processing_status AS processingStatus, processing_error AS processingError FROM articles ORDER BY booklist_number, created_at DESC").all().map((article) => ({
       ...article,
-      assignedClasses: db.prepare("SELECT c.id, c.name FROM article_assignments aa JOIN classes c ON c.id = aa.class_id WHERE aa.article_id = ?").all(article.id),
+      assignedClasses: db.prepare("SELECT c.id, c.name FROM article_assignments aa JOIN classes c ON c.id = aa.class_id WHERE aa.article_id = ? AND c.status = 'active'").all(article.id),
       pages: articlePages(article.id)
     }));
     return json(res, 200, { date: today, classes, articles });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/teacher/classes") {
+    const auth = requireRole(req, res, "teacher");
+    if (!auth) return;
+    const input = await bodyJson(req);
+    const name = String(input.name || "").trim();
+    if (!name || name.length > 80) return json(res, 400, { error: "班级名称不能为空且不能超过80个字符。" });
+    const existing = db.prepare("SELECT id, status FROM classes WHERE LOWER(name) = LOWER(?)").get(name);
+    if (existing?.status === "active") return json(res, 409, { error: "该班级名称已存在。" });
+    if (existing) {
+      db.prepare("UPDATE classes SET name = ?, status = 'active' WHERE id = ?").run(name, existing.id);
+      return json(res, 200, { id: existing.id, name, restored: true });
+    }
+    const classId = id("class");
+    db.prepare("INSERT INTO classes (id, name, status) VALUES (?, ?, 'active')").run(classId, name);
+    return json(res, 201, { id: classId, name });
+  }
+
+  const classMatch = /^\/api\/teacher\/classes\/([^/]+)$/.exec(url.pathname);
+  if (req.method === "PATCH" && classMatch) {
+    const auth = requireRole(req, res, "teacher");
+    if (!auth) return;
+    const input = await bodyJson(req);
+    const name = String(input.name || "").trim();
+    if (!name || name.length > 80) return json(res, 400, { error: "班级名称不能为空且不能超过80个字符。" });
+    const current = db.prepare("SELECT id FROM classes WHERE id = ? AND status = 'active'").get(classMatch[1]);
+    if (!current) return json(res, 404, { error: "班级不存在。" });
+    const duplicate = db.prepare("SELECT id FROM classes WHERE id <> ? AND LOWER(name) = LOWER(?)").get(classMatch[1], name);
+    if (duplicate) return json(res, 409, { error: "该班级名称已存在。" });
+    db.prepare("UPDATE classes SET name = ? WHERE id = ?").run(name, classMatch[1]);
+    return json(res, 200, { id: classMatch[1], name });
+  }
+
+  if (req.method === "DELETE" && classMatch) {
+    const auth = requireRole(req, res, "teacher");
+    if (!auth) return;
+    const current = db.prepare("SELECT id FROM classes WHERE id = ? AND status = 'active'").get(classMatch[1]);
+    if (!current) return json(res, 404, { error: "班级不存在。" });
+    const activeStudents = db.prepare("SELECT COUNT(*) AS count FROM students WHERE class_id = ? AND status = 'active'").get(classMatch[1]).count;
+    if (activeStudents) return json(res, 409, { error: "请先转移或删除该班级中的在读学生，再删除班级。" });
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("DELETE FROM article_assignments WHERE class_id = ?").run(classMatch[1]);
+      db.prepare("UPDATE classes SET status = 'deleted' WHERE id = ?").run(classMatch[1]);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    return json(res, 200, { ok: true });
   }
 
   if (req.method === "POST" && url.pathname === "/api/teacher/students") {
@@ -608,6 +661,8 @@ async function api(req, res, url) {
     const name = String(input.name || "").trim();
     const normalized = name.toLowerCase();
     if (!name || String(input.code || "").length < 8 || !input.classId) return json(res, 400, { error: "姓名、班级和至少8位 code 都是必填项。" });
+    const targetClass = db.prepare("SELECT id FROM classes WHERE id = ? AND status = 'active'").get(String(input.classId));
+    if (!targetClass) return json(res, 400, { error: "请选择有效班级。" });
     const existing = db.prepare("SELECT id FROM students WHERE normalized_name = ?").get(normalized);
     if (existing) {
       db.prepare("UPDATE students SET display_name = ?, class_id = ?, code_hash = ?, status = 'active', token_version = token_version + 1 WHERE id = ?").run(name, input.classId, hashSecret(String(input.code)), existing.id);
@@ -642,16 +697,22 @@ async function api(req, res, url) {
     if (!auth) return;
     const input = await bodyJson(req);
     const filename = path.basename(String(input.filename || "book.pdf"));
-    const title = String(input.title || filename.replace(/\.pdf$/i, "")).trim();
-    const match = /^data:application\/pdf;base64,(.+)$/i.exec(String(input.dataUrl || ""));
-    if (!title || !match) return json(res, 400, { error: "请选择有效的 PDF 文件。" });
-    const pdfBuffer = Buffer.from(match[1], "base64");
-    if (pdfBuffer.length < 5 || pdfBuffer.subarray(0, 5).toString("ascii") !== "%PDF-") return json(res, 400, { error: "文件内容不是有效的 PDF。" });
+    const title = String(input.title || filename.replace(/\.(?:pdf|png)$/i, "")).trim();
+    const dataUrl = String(input.dataUrl || "");
+    const pdfMatch = /^data:application\/pdf;base64,(.+)$/i.exec(dataUrl);
+    const pngMatch = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
+    const match = pdfMatch || pngMatch;
+    if (!title || !match) return json(res, 400, { error: "请选择有效的 PDF 或 PNG 文件。" });
+    const sourceBuffer = Buffer.from(match[1], "base64");
+    const isPdf = Boolean(pdfMatch);
+    const validPdf = sourceBuffer.length >= 5 && sourceBuffer.subarray(0, 5).toString("ascii") === "%PDF-";
+    const validPng = sourceBuffer.length >= 8 && sourceBuffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    if ((isPdf && !validPdf) || (!isPdf && !validPng)) return json(res, 400, { error: "文件内容与 PDF / PNG 格式不匹配。" });
     const articleId = id("article");
     const bookDir = path.join(PDF_DIR, articleId);
-    const sourcePath = path.join(bookDir, "source.pdf");
+    const sourcePath = path.join(bookDir, isPdf ? "source.pdf" : "source.png");
     await mkdir(bookDir, { recursive: true });
-    await writeFile(sourcePath, pdfBuffer);
+    await writeFile(sourcePath, sourceBuffer);
     const relativeSource = path.relative(DATA_DIR, sourcePath).replaceAll("\\", "/");
     const booklistNumber = nextBooklistNumber();
     try {
@@ -683,8 +744,19 @@ async function api(req, res, url) {
     const article = db.prepare("SELECT processing_status AS processingStatus FROM articles WHERE id = ?").get(assignmentMatch[1]);
     if (!article || article.processingStatus !== "ready") return json(res, 409, { error: "PDF/OCR 处理完成后才能分配班级。" });
     const input = await bodyJson(req);
-    db.prepare("DELETE FROM article_assignments WHERE article_id = ?").run(assignmentMatch[1]);
-    for (const classId of input.classIds || []) db.prepare("INSERT OR IGNORE INTO article_assignments (article_id, class_id) VALUES (?, ?)").run(assignmentMatch[1], classId);
+    const classIds = [...new Set((Array.isArray(input.classIds) ? input.classIds : []).map(String))];
+    if (classIds.some((classId) => !db.prepare("SELECT 1 FROM classes WHERE id = ? AND status = 'active'").get(classId))) {
+      return json(res, 400, { error: "分配列表包含无效班级。" });
+    }
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("DELETE FROM article_assignments WHERE article_id = ?").run(assignmentMatch[1]);
+      for (const classId of classIds) db.prepare("INSERT INTO article_assignments (article_id, class_id) VALUES (?, ?)").run(assignmentMatch[1], classId);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
     return json(res, 200, { ok: true });
   }
 

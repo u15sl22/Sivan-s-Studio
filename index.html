@@ -178,6 +178,18 @@
           <button class="tab-button" data-teacher-tab="files" type="button">Files</button>
         </div>
         <section class="teacher-tool-panel" id="teacherStudentsPanel">
+          <div class="class-manager">
+            <div class="panel-heading">
+              <h3>Class setup · 班级管理</h3>
+              <p>Add, rename, or remove empty classes.</p>
+            </div>
+            <div class="class-admin-list" id="classAdminList"></div>
+            <div class="class-add-row">
+              <input id="newClassName" placeholder="New class name · 新班级名称" />
+              <button class="secondary-action" id="addClassButton" type="button">Add class · 增加班级</button>
+            </div>
+            <p class="login-hint" id="classAdminHint">Classes with active students cannot be deleted. · 有在读学生的班级不可删除。</p>
+          </div>
           <h3>Student setup</h3>
           <div class="teacher-form-grid">
             <input id="newStudentName" placeholder="Student name" />
@@ -188,21 +200,33 @@
           <p class="login-hint" id="studentAdminHint">Student codes are set here only.</p>
         </section>
         <section class="teacher-tool-panel" id="teacherFilesPanel">
-          <h3>PDF reading library</h3>
-          <input id="articleTitleInput" placeholder="Optional title for a single PDF" />
+          <h3>Reading library</h3>
+          <input id="articleTitleInput" placeholder="Optional title for a single PDF or PNG" />
           <label class="file-picker">
-            <span>Choose one or many PDF books · 选择一个或多个 PDF</span>
-            <input id="articleFileInput" type="file" accept="application/pdf,.pdf" multiple />
+            <span>Choose one or many PDF / PNG books · 选择一个或多个 PDF / PNG</span>
+            <input id="articleFileInput" type="file" accept="application/pdf,image/png,.pdf,.png" multiple />
           </label>
           <div class="selected-pdf-list" id="selectedPdfList" aria-live="polite"></div>
-          <button class="primary-action" id="uploadArticleButton" type="button" disabled>Upload PDF books · 上传 PDF</button>
-          <p class="login-hint" id="articleAdminHint">Each PDF becomes one book. Processing usually takes about 3 minutes per PDF and continues in the background. · 每本 PDF 通常约需 3 分钟，并在后台继续处理。</p>
+          <button class="primary-action" id="uploadArticleButton" type="button" disabled>Upload reading files · 上传读物</button>
+          <p class="login-hint" id="articleAdminHint">Each PDF or PNG becomes one book and continues processing in the background. · 每个 PDF 或 PNG 会成为一本读物并在后台继续处理。</p>
           <div class="booklist-tabs" id="booklistTabs" aria-label="Booklists"></div>
+          <button class="booklist-collapse-button secondary-action" id="booklistCollapseButton" type="button" hidden></button>
           <div class="article-admin-list" id="articleAdminList"></div>
         </section>
         <div class="teacher-list" id="teacherList"></div>
       </section>
     </main>
+
+    <dialog class="confirm-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle">
+      <form method="dialog">
+        <h3 id="confirmDialogTitle">Confirm deletion · 确认删除</h3>
+        <p id="confirmDialogMessage"></p>
+        <div class="confirm-dialog-actions">
+          <button class="secondary-action" value="cancel" type="submit">Cancel · 取消</button>
+          <button class="danger-button" value="confirm" type="submit">Delete · 删除</button>
+        </div>
+      </form>
+    </dialog>
 
     <script src="./app.js"></script>
   </body>
