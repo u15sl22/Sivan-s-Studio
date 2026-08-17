@@ -1,7 +1,7 @@
 # Sivan's Studio 部署与运维方案
 
-> 冻结版本：`main@64cc26d84b40a9759b2c84ff1651e134fd281473`  
-> 冻结日期：2026-08-10  
+> 文档复核日期：2026-08-17
+> 部署版本：每次部署前记录 `git rev-parse HEAD`，并以已完成构建和备份的提交为准
 > 目标环境：家庭 Debian 服务器（Docker）+ 阿里云公网入口（Nginx + frps 0.38.0）  
 > 公网域名：`sivanstudio.markyan04.com`
 
@@ -299,7 +299,82 @@ curl -f https://sivanstudio.markyan04.com/
 
 构建新镜像时旧容器会继续运行；`docker compose up -d` 切换到新镜像时会产生短暂中断。中断时仍为 `processing` 的 PDF/OCR 任务会在新容器启动后恢复。
 
-## 9. 回滚
+## 9. 清空书库并从本地批量上传
+
+该流程用于完整替换生产书库。它保留教师、班级和学生账号，但会删除全部书籍、页面、班级分配、阅读成绩、打卡记录和录音。必须先停止应用并备份整个 `data/`。
+
+### 9.1 本地预检
+
+本地需要 Node.js 22.5 或更高版本。先检查 PDF/PNG 数量、大小和 Booklist 分组，不连接服务器：
+
+```bash
+cd /path/to/Sivan-Studio
+npm run library:upload -- \
+  --directory "/path/to/reading-books" \
+  --dry-run \
+  --strip-number-prefix
+```
+
+文件按自然文件名顺序上传，每 10 本进入一个 Booklist。建议使用 `001-Book Name.pdf` 形式命名；`--strip-number-prefix` 只从显示标题中移除编号，不改变上传顺序。单个原文件不得超过 88 MiB。
+
+### 9.2 生产备份和离线清空
+
+先确保服务器已拉取最新代码并成功构建包含管理脚本的新镜像，然后执行：
+
+```bash
+cd /srv/apps/sivan-studio
+
+BACKUP_TIME=$(date +%F-%H%M%S)
+sudo install -d -m 700 /srv/backups/sivan-studio
+
+docker compose stop
+sudo tar -C /srv/apps/sivan-studio \
+  -czf "/srv/backups/sivan-studio/before-library-reset-$BACKUP_TIME.tar.gz" \
+  data
+
+docker compose run --rm --no-deps \
+  sivan-studio \
+  node scripts/reset_library.mjs --dry-run
+
+docker compose run --rm --no-deps \
+  sivan-studio \
+  node scripts/reset_library.mjs --confirm=RESET_LIBRARY_AND_HISTORY
+
+docker compose up -d
+curl -f http://127.0.0.1:8766/
+```
+
+清空工具必须离线执行；不要在 Node 服务或 OCR 子进程仍运行时调用。若需要恢复，停止容器，将当前 `data/` 移走，再从上述压缩包完整解压并恢复 `1000:1000` 所有权。
+
+### 9.3 通过端口转发上传
+
+端口转发应使生产应用出现在本机 `http://127.0.0.1:8766`。保持转发会话运行，在本地仓库执行：
+
+```bash
+cd /path/to/Sivan-Studio
+npm run library:upload -- \
+  --url http://127.0.0.1:8766 \
+  --directory "/path/to/reading-books" \
+  --strip-number-prefix
+```
+
+工具会隐藏输入教师密码、递归扫描 PDF/PNG、逐本上传，并在读物目录中维护权限为 `0600` 的 `.sivan-upload-state.json`。每个文件还会携带确定性的导入键；请求已被服务器接受但本地来不及保存进度时，重跑也只会获得已有记录，不会重复建书。
+
+上传中断后直接执行同一条命令即可续传。不要删除或编辑进度文件。只有明确要向非空书库追加文件时才使用 `--allow-existing`。
+
+如果以后再次清空服务器并重新开始一轮全新导入，应先把旧的 `.sivan-upload-state.json` 移到别处留档；工具发现服务器书籍数少于旧进度时会拒绝跳过文件。
+
+查看服务器处理进度：
+
+```bash
+npm run library:upload -- \
+  --url http://127.0.0.1:8766 \
+  --status
+```
+
+上传完成不代表 OCR 完成。后台仍为单并发，200 本按每本约 3 分钟估算需要约 10 小时；容器重启后会恢复 `processing` 任务。
+
+## 10. 回滚
 
 先停止容器并记录现场，然后切换到已知可用的提交：
 
@@ -314,7 +389,7 @@ docker compose up -d
 
 如果新版本改变过数据库结构或数据语义，还应恢复对应版本更新前的完整 `data/` 备份。完成排障后可用 `git switch main` 返回主分支。
 
-## 10. 当前限制与安全边界
+## 11. 当前限制与安全边界
 
 - 只能运行一个应用容器。SQLite 和进程内 PDF 队列都不适合多副本部署。
 - `8766` 不得直接公开；它只允许 Debian 本机 frpc 访问。

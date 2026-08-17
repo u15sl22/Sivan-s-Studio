@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check app.js"
+    "check": "node --check server.mjs && node --check app.js && node --check scripts/reset_library.mjs && node --check scripts/upload_library.mjs",
+    "library:reset": "node scripts/reset_library.mjs",
+    "library:upload": "node scripts/upload_library.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

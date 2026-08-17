@@ -36,3 +36,7 @@ node server.mjs
 ## 数据与备份
 
 `data/` 已被 `.gitignore` 排除，不应提交到 GitHub。迁移或备份服务器时，应停止应用后整体复制 `data/`，以同时保留数据库、PDF、页面图片和录音。更完整的结构、异步处理流程及数据库选型说明见 `BACKEND_AUTH_ARCHITECTURE.md`。
+
+## 批量书库导入
+
+大量 PDF/PNG 不需要通过浏览器逐本选择。`scripts/upload_library.mjs` 可通过端口转发后的教师 API 顺序上传、自动续传并防止重复建书；`scripts/reset_library.mjs` 用于备份后的生产环境离线清库。清库会保留账号，但会删除书籍、成绩、打卡和录音。完整命令、安全条件和恢复方式见 `Ops.md` 的“清空书库并从本地批量上传”。

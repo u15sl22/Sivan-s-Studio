@@ -12,4 +12,7 @@ coverage/
 .vscode/
 .idea/
 .DS_Store
+.sivan-upload-state.json
+.sivan-upload-state.json.tmp
 Thumbs.db
+/pdfs_upload

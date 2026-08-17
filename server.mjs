@@ -83,6 +83,7 @@ function initDatabase() {
       booklist_number INTEGER NOT NULL DEFAULT 1,
       processing_status TEXT NOT NULL DEFAULT 'ready',
       processing_error TEXT NOT NULL DEFAULT '',
+      import_key TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS article_pages (
@@ -140,6 +141,7 @@ function initDatabase() {
   if (!articleColumns.some((column) => column.name === "page_count")) db.exec("ALTER TABLE articles ADD COLUMN page_count INTEGER NOT NULL DEFAULT 0");
   if (!articleColumns.some((column) => column.name === "processing_status")) db.exec("ALTER TABLE articles ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'ready'");
   if (!articleColumns.some((column) => column.name === "processing_error")) db.exec("ALTER TABLE articles ADD COLUMN processing_error TEXT NOT NULL DEFAULT ''");
+  if (!articleColumns.some((column) => column.name === "import_key")) db.exec("ALTER TABLE articles ADD COLUMN import_key TEXT");
   if (!articleColumns.some((column) => column.name === "booklist_number")) {
     db.exec("ALTER TABLE articles ADD COLUMN booklist_number INTEGER NOT NULL DEFAULT 1");
     const existingArticles = db.prepare("SELECT id FROM articles ORDER BY created_at, id").all();
@@ -149,6 +151,7 @@ function initDatabase() {
   db.exec("DROP INDEX IF EXISTS idx_articles_booklist_created_at");
   db.exec("CREATE INDEX IF NOT EXISTS idx_articles_booklist_created_desc ON articles(booklist_number, created_at DESC)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_articles_processing_status ON articles(processing_status) WHERE processing_status = 'processing'");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_import_key ON articles(import_key) WHERE import_key IS NOT NULL");
   db.exec("PRAGMA optimize");
   const pageColumns = db.prepare("PRAGMA table_info(article_pages)").all();
   if (!pageColumns.some((column) => column.name === "image_path")) db.exec("ALTER TABLE article_pages ADD COLUMN image_path TEXT");
@@ -603,6 +606,15 @@ async function api(req, res, url) {
     return json(res, 200, { date: today, classes, articles });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/teacher/library/status") {
+    const auth = requireRole(req, res, "teacher");
+    if (!auth) return;
+    const counts = { processing: 0, ready: 0, failed: 0 };
+    const rows = db.prepare("SELECT processing_status AS status, COUNT(*) AS count FROM articles GROUP BY processing_status").all();
+    for (const row of rows) counts[row.status] = Number(row.count);
+    return json(res, 200, { total: rows.reduce((sum, row) => sum + Number(row.count), 0), ...counts });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/teacher/classes") {
     const auth = requireRole(req, res, "teacher");
     if (!auth) return;
@@ -698,6 +710,12 @@ async function api(req, res, url) {
     const input = await bodyJson(req);
     const filename = path.basename(String(input.filename || "book.pdf"));
     const title = String(input.title || filename.replace(/\.(?:pdf|png)$/i, "")).trim();
+    const importKey = String(input.importKey || "").trim() || null;
+    if (importKey && !/^bulk-v1:[a-f0-9]{64}$/.test(importKey)) return json(res, 400, { error: "批量导入幂等键格式不正确。" });
+    if (importKey) {
+      const existing = db.prepare("SELECT id, title, booklist_number AS booklistNumber, processing_status AS status FROM articles WHERE import_key = ?").get(importKey);
+      if (existing) return json(res, 200, { ...existing, duplicate: true });
+    }
     const dataUrl = String(input.dataUrl || "");
     const pdfMatch = /^data:application\/pdf;base64,(.+)$/i.exec(dataUrl);
     const pngMatch = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
@@ -716,8 +734,8 @@ async function api(req, res, url) {
     const relativeSource = path.relative(DATA_DIR, sourcePath).replaceAll("\\", "/");
     const booklistNumber = nextBooklistNumber();
     try {
-      db.prepare("INSERT INTO articles (id, title, source_filename, source_pdf_path, page_count, booklist_number, processing_status, processing_error) VALUES (?, ?, ?, ?, 0, ?, 'processing', '')")
-        .run(articleId, title, filename, relativeSource, booklistNumber);
+      db.prepare("INSERT INTO articles (id, title, source_filename, source_pdf_path, page_count, booklist_number, processing_status, processing_error, import_key) VALUES (?, ?, ?, ?, 0, ?, 'processing', '', ?)")
+        .run(articleId, title, filename, relativeSource, booklistNumber, importKey);
     } catch (error) {
       await rm(bookDir, { recursive: true, force: true });
       throw error;
